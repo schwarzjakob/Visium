@@ -1,0 +1,74 @@
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  background: var(--soft);
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-4) 0;
+}
+
+.app-header h1 {
+  margin: 0 0 var(--space-4) 0;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.tabs {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.tab, .tab-active {
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: var(--space-2) var(--space-4);
+  font-size: 0.9rem;
+  font-weight: 500;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tab:hover {
+  background: var(--bg);
+}
+
+.tab-active {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.tab-active:hover {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.app-main {
+  flex: 1;
+  padding: var(--space-6) 0;
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: var(--space-3);
+  }
+  
+  .tabs {
+    justify-content: stretch;
+  }
+  
+  .tab, .tab-active {
+    flex: 1;
+    text-align: center;
+  }
+  
+  .app-header h1 {
+    font-size: 1.5rem;
+    text-align: center;
+  }
+}
