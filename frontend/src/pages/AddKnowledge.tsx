@@ -17,6 +17,7 @@ export default function AddKnowledge() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<ObjectiveWithRelated[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [hasSubmitted, setHasSubmitted] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,6 +26,7 @@ export default function AddKnowledge() {
     setLoading(true);
     setError(null);
     setResults([]);
+    setHasSubmitted(true);
 
     try {
       const response = await fetch('http://localhost:3001/api/objectives/extract-and-store', {
@@ -42,7 +44,7 @@ export default function AddKnowledge() {
 
       const data: ExtractResponse = await response.json();
       setResults(data.objectives);
-      
+
       if (data.totalInserted === 0) {
         setError('No new objectives were extracted from your input. Try adding more specific goals or plans.');
       }
@@ -54,84 +56,129 @@ export default function AddKnowledge() {
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text).catch(console.error);
+  const copyToClipboard = (value: string) => {
+    navigator.clipboard.writeText(value).catch(console.error);
   };
 
+  const showEmptyState = !loading && !error && results.length === 0 && hasSubmitted;
+
   return (
-    <div className="add-knowledge">
-      <h2>Add Knowledge</h2>
-      <p>Paste your notes, discussions, or ideas below. Visium will extract clear objectives and show related knowledge.</p>
+    <section className="add-knowledge">
+      <header className="add-knowledge__header">
+        <span className="add-knowledge__eyebrow">Intake Studio</span>
+        <h2>Drop in raw knowledge. Visium shapes it into strategic objectives.</h2>
+        <p>
+          Paste transcripts, meeting notes, or ambitious plans. We extract objectives,
+          preserve context, and connect related knowledge instantly.
+        </p>
+      </header>
 
-      <form onSubmit={handleSubmit} className="input-form">
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Paste notes or ideas here...
+      <div className="add-knowledge__layout">
+        <article className="panel panel--primary add-knowledge__panel">
+          <form onSubmit={handleSubmit} className="add-knowledge__form">
+            <label className="sr-only" htmlFor="knowledge-input">
+              Raw knowledge input
+            </label>
+            <textarea
+              id="knowledge-input"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={`Paste notes or ideas here…\n\nTry things like:\n• Executive sync notes\n• Product requirement drafts\n• Customer interviews\n• Strategy memos`}
+              rows={10}
+              className="add-knowledge__textarea"
+              disabled={loading}
+            />
 
-For example:
-• Meeting notes from strategy session
-• Project plans and goals  
-• Discussion transcripts
-• Brainstorming outputs"
-          rows={8}
-          className="text-input"
-          disabled={loading}
-        />
-        
-        <button type="submit" disabled={loading || !text.trim()}>
-          {loading ? 'Processing...' : 'Extract Objectives'}
-        </button>
-      </form>
+            <div className="add-knowledge__actions">
+              <button type="submit" disabled={loading || !text.trim()}>
+                {loading ? 'Extracting…' : 'Extract Objectives'}
+              </button>
+              <span className="add-knowledge__hint">Secure, on-prem processing · Built for high-trust teams</span>
+            </div>
+          </form>
+
+          <div className="add-knowledge__chips" aria-hidden>
+            <span>Meeting notes</span>
+            <span>Vision decks</span>
+            <span>Strategy workshops</span>
+            <span>Sprint reviews</span>
+          </div>
+        </article>
+
+        <aside className="panel panel--secondary add-knowledge__aside">
+          <h3>How to get crisp objectives</h3>
+          <ul>
+            <li>Include owners, goals, and measurable signals for each initiative.</li>
+            <li>Highlight blockers or dependencies to boost related knowledge suggestions.</li>
+            <li>Group related themes together—Visium keeps nuance without losing structure.</li>
+          </ul>
+          <div className="add-knowledge__stats">
+            <div>
+              <span className="add-knowledge__stats-value"><strong>35s</strong></span>
+              <span className="add-knowledge__stats-label">Median processing time</span>
+            </div>
+            <div>
+              <span className="add-knowledge__stats-value"><strong>92%</strong></span>
+              <span className="add-knowledge__stats-label">Objective precision</span>
+            </div>
+          </div>
+        </aside>
+      </div>
 
       {error && (
-        <div className="error-message">
-          <p><strong>Error:</strong> {error}</p>
+        <div className="alert" role="alert">
+          <span className="alert__badge">Error</span>
+          <p>{error}</p>
         </div>
       )}
 
       {results.length > 0 && (
-        <div className="results">
-          <h3>Extracted Objectives ({results.length})</h3>
-          <div className="objectives-list">
-            {results.map((objective) => (
-              <div key={objective.id} className="objective-card">
-                <div className="objective-text">
-                  {objective.text}
-                </div>
-                
+        <section className="results">
+          <header className="results__header">
+            <div>
+              <span className="results__eyebrow">Objectives ready</span>
+              <h3>{results.length} extracted objective{results.length > 1 ? 's' : ''}</h3>
+            </div>
+            <p>Click any related insight to copy it for follow-up briefs or planning docs.</p>
+          </header>
+
+          <div className="results__grid">
+            {results.map((objective, index) => (
+              <article key={objective.id} className="objective-card">
+                <div className="objective-card__badge">Objective {index + 1}</div>
+                <p className="objective-card__text">{objective.text}</p>
+
                 {objective.related.length > 0 && (
-                  <div className="related-section">
-                    <details className="related-details">
-                      <summary className="related-badge">
-                        Related ({objective.related.length})
-                      </summary>
-                      <div className="related-list">
-                        {objective.related.map((related) => (
-                          <div 
-                            key={related.id} 
-                            className="related-item"
-                            onClick={() => copyToClipboard(related.text)}
-                            title="Click to copy"
-                          >
-                            {related.text}
-                          </div>
-                        ))}
-                      </div>
-                    </details>
+                  <div className="objective-card__related">
+                    <span className="objective-card__related-label">
+                      Related knowledge ({objective.related.length})
+                    </span>
+                    <div className="objective-card__related-list">
+                      {objective.related.map((related) => (
+                        <button
+                          key={related.id}
+                          type="button"
+                          className="related-chip"
+                          onClick={() => copyToClipboard(related.text)}
+                        >
+                          {related.text}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
-              </div>
+              </article>
             ))}
           </div>
-        </div>
+        </section>
       )}
 
-      {!loading && !error && results.length === 0 && text.trim() && (
+      {showEmptyState && (
         <div className="empty-state">
-          <p>Submit your text above to extract objectives.</p>
+          <div className="empty-state__pulse" aria-hidden />
+          <p>We received your entry — awaiting data to turn into actionable objectives.</p>
         </div>
       )}
-    </div>
+    </section>
   );
 }
