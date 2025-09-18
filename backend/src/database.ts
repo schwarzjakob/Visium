@@ -379,3 +379,107 @@ export async function getObjectivesByIds(ids: string[]): Promise<ObjectiveDTO[]>
 
   return objectives.map(mapObjectiveToDTO);
 }
+
+type RelationshipWithTarget = ObjectiveRelationship & {
+  to: {
+    id: string;
+    text: string;
+    status: ObjectiveStatus;
+    priority: ObjectivePriority;
+  };
+};
+
+function mapRelationshipToDTO(relationship: RelationshipWithTarget): ObjectiveRelationDTO {
+  return {
+    id: relationship.id,
+    type: relationship.type,
+    rationale: relationship.rationale,
+    weight: relationship.weight,
+    target: {
+      id: relationship.to.id,
+      text: relationship.to.text,
+      status: relationship.to.status,
+      priority: relationship.to.priority,
+    },
+  } satisfies ObjectiveRelationDTO;
+}
+
+export async function createObjectiveRelationshipRecord(input: {
+  fromId: string;
+  toId: string;
+  type: ObjectiveRelationshipType;
+  rationale?: string | null;
+  weight?: number | null;
+}): Promise<{ fromId: string; relationship: ObjectiveRelationDTO }> {
+  const relationship = await prisma.objectiveRelationship.create({
+    data: {
+      fromId: input.fromId,
+      toId: input.toId,
+      type: input.type,
+      rationale: input.rationale ?? null,
+      weight: input.weight ?? null,
+    },
+    include: {
+      to: {
+        select: {
+          id: true,
+          text: true,
+          status: true,
+          priority: true,
+        },
+      },
+    },
+  });
+
+  return {
+    fromId: relationship.fromId,
+    relationship: mapRelationshipToDTO(relationship),
+  };
+}
+
+export async function updateObjectiveRelationshipRecord(
+  id: string,
+  updates: {
+    toId?: string;
+    type?: ObjectiveRelationshipType;
+    rationale?: string | null;
+    weight?: number | null;
+  },
+): Promise<{ fromId: string; relationship: ObjectiveRelationDTO }> {
+  const relationship = await prisma.objectiveRelationship.update({
+    where: { id },
+    data: {
+      toId: updates.toId,
+      type: updates.type,
+      rationale: updates.rationale === undefined ? undefined : updates.rationale,
+      weight: updates.weight === undefined ? undefined : updates.weight,
+    },
+    include: {
+      to: {
+        select: {
+          id: true,
+          text: true,
+          status: true,
+          priority: true,
+        },
+      },
+    },
+  });
+
+  return {
+    fromId: relationship.fromId,
+    relationship: mapRelationshipToDTO(relationship),
+  };
+}
+
+export async function deleteObjectiveRelationshipRecord(id: string): Promise<{ id: string; fromId: string }> {
+  const relationship = await prisma.objectiveRelationship.delete({
+    where: { id },
+    select: {
+      id: true,
+      fromId: true,
+    },
+  });
+
+  return relationship;
+}

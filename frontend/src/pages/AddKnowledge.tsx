@@ -15,6 +15,8 @@ export default function AddKnowledge({ onProcessed }: AddKnowledgeProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastProcessedCount, setLastProcessedCount] = useState<number | null>(null);
+  const [tags, setTags] = useState<string[]>([]);
+  const [tagInput, setTagInput] = useState('');
 
   const placeholder = useMemo(
     () =>
@@ -36,7 +38,10 @@ export default function AddKnowledge({ onProcessed }: AddKnowledgeProps) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ text: text.trim() }),
+        body: JSON.stringify({
+          text: text.trim(),
+          tags,
+        }),
       });
 
       if (!response.ok) {
@@ -49,6 +54,7 @@ export default function AddKnowledge({ onProcessed }: AddKnowledgeProps) {
         ...objective,
         originalText: objective.text,
         status: 'pending',
+        tags: Array.from(new Set([...(objective.tags ?? []), ...tags])),
       }));
 
       if (preparedTickets.length === 0) {
@@ -57,6 +63,8 @@ export default function AddKnowledge({ onProcessed }: AddKnowledgeProps) {
         onProcessed(preparedTickets);
         setLastProcessedCount(preparedTickets.length);
         setText('');
+        setTags([]);
+        setTagInput('');
       }
     } catch (err) {
       console.error('Error submitting text:', err);
@@ -70,9 +78,37 @@ export default function AddKnowledge({ onProcessed }: AddKnowledgeProps) {
     setText('');
     setError(null);
     setLastProcessedCount(null);
+    setTags([]);
+    setTagInput('');
   };
 
   const showSuccess = !loading && !error && lastProcessedCount !== null;
+
+  const handleTagKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'Enter' && event.key !== ',' && event.key !== 'Tab') return;
+    event.preventDefault();
+    const value = tagInput.trim().toLowerCase();
+    if (!value || tags.includes(value)) {
+      setTagInput('');
+      return;
+    }
+    setTags((prev) => [...prev, value]);
+    setTagInput('');
+  };
+
+  const handleTagBlur = () => {
+    const value = tagInput.trim().toLowerCase();
+    if (!value || tags.includes(value)) {
+      setTagInput('');
+      return;
+    }
+    setTags((prev) => [...prev, value]);
+    setTagInput('');
+  };
+
+  const removeTag = (value: string) => {
+    setTags((prev) => prev.filter((tag) => tag !== value));
+  };
 
   return (
     <section className="intake">
@@ -99,6 +135,31 @@ export default function AddKnowledge({ onProcessed }: AddKnowledgeProps) {
               disabled={loading}
               rows={10}
             />
+            <div className="intake__tags">
+              {tags.map((tag) => (
+                <span key={tag} className="intake__tag">
+                  {tag}
+                  <button
+                    type="button"
+                    className="intake__tag-remove"
+                    onClick={() => removeTag(tag)}
+                    aria-label={`Remove tag ${tag}`}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              <input
+                className="intake__tag-input"
+                type="text"
+                value={tagInput}
+                onChange={(event) => setTagInput(event.target.value)}
+                onKeyDown={handleTagKeyDown}
+                onBlur={handleTagBlur}
+                placeholder={tags.length === 0 ? 'Add tags…' : ''}
+                disabled={loading}
+              />
+            </div>
             <div className="intake__actions">
               <button type="submit" disabled={loading || !text.trim()}>
                 {loading ? 'Processing…' : 'Send to Visium'}

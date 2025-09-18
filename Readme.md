@@ -74,19 +74,3 @@ Visium is an AI-powered strategy assistant that transforms scattered discussions
 6. **Open the app:**
    - Frontend: http://localhost:5173
    - Backend API: http://localhost:3001
-
-## Development Tasks
-
-## API Endpoints
-
-- `POST /api/extract-and-store` - Submit raw text, get extracted objectives
-- `GET /api/objectives` - List objectives with pagination and search
-- `GET /api/health` - Health check
-
-## Project Structure
-
-```
-visium/
-├── frontend/          # React + Vite + TypeScript
-├── backend/           # Node + Express + TypeScript
-```

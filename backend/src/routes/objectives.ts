@@ -2,11 +2,14 @@ import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import {
   createKnowledgeGraphEntry,
+  createObjectiveRelationshipRecord,
+  deleteObjectiveRelationshipRecord,
   getKnowledgeGraphSnapshot,
   getObjectivesByIds,
   getObjectivesForPrompt,
   getObjectivesWithRelations,
   searchObjectives,
+  updateObjectiveRelationshipRecord,
   prisma,
   type ObjectiveDTO,
   type ObjectiveDraft,
@@ -16,6 +19,7 @@ import {
   ObjectivePriority,
   ObjectiveRelationshipType,
   ObjectiveStatus,
+  Prisma,
 } from '@prisma/client';
 import {
   extractObjectiveGraph,
@@ -30,6 +34,7 @@ export const objectivesRouter = Router();
 const extractAndStoreSchema = z.object({
   text: z.string().min(1, 'Text is required'),
   title: z.string().optional(),
+  tags: z.array(z.string().min(1)).optional(),
 });
 
 const getObjectivesSchema = z.object({
@@ -44,9 +49,46 @@ const getObjectivesSchema = z.object({
   query: z.string().optional(),
 });
 
+const getObjectivesBatchSchema = z.object({
+  ids: z
+    .union([z.string().min(1), z.array(z.string().min(1))])
+    .transform((value) => {
+      const values = Array.isArray(value) ? value : value.split(',');
+      return values.map((id) => id.trim()).filter((id) => id.length > 0);
+    })
+    .refine((ids) => ids.length > 0, 'Provide at least one objective id'),
+});
+
 const brainQuerySchema = z.object({
   question: z.string().min(5, 'Ask a complete question'),
 });
+
+const createRelationshipSchema = z.object({
+  fromId: z.string().uuid('fromId must be a valid UUID'),
+  toId: z.string().uuid('toId must be a valid UUID'),
+  type: z.nativeEnum(ObjectiveRelationshipType),
+  rationale: z.string().trim().max(1000).optional().nullable(),
+  weight: z.number().optional().nullable(),
+}).superRefine((value, ctx) => {
+  if (value.fromId === value.toId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Relationships must connect two different objectives',
+      path: ['toId'],
+    });
+  }
+});
+
+const updateRelationshipSchema = z
+  .object({
+    toId: z.string().uuid('toId must be a valid UUID').optional(),
+    type: z.nativeEnum(ObjectiveRelationshipType).optional(),
+    rationale: z.string().trim().max(1000).optional().nullable(),
+    weight: z.number().optional().nullable(),
+  })
+  .refine((value) => Object.values(value).some((item) => item !== undefined), {
+    message: 'Provide at least one field to update',
+  });
 
 // POST /api/objectives/extract-and-store
 objectivesRouter.post('/extract-and-store', async (req: Request, res: Response) => {
@@ -54,7 +96,8 @@ objectivesRouter.post('/extract-and-store', async (req: Request, res: Response) 
   console.log('\n🚀 [EXTRACT-AND-STORE] Starting request...');
 
   try {
-    const { text, title } = extractAndStoreSchema.parse(req.body);
+    const { text, title, tags } = extractAndStoreSchema.parse(req.body);
+    const manualTags = sanitizeList(tags ?? [], { lowercase: true });
     console.log(`📝 [INPUT] Received text: ${text.length} characters`);
     console.log(`📝 [INPUT] Preview: "${text.substring(0, 140)}${text.length > 140 ? '…' : ''}"`);
 
@@ -71,6 +114,13 @@ objectivesRouter.post('/extract-and-store', async (req: Request, res: Response) 
       title: title ?? null,
       rawText: text,
     });
+
+    if (manualTags.length > 0) {
+      drafts.objectives = drafts.objectives.map((objective) => ({
+        ...objective,
+        tags: Array.from(new Set([...(objective.tags ?? []), ...manualTags])),
+      }));
+    }
 
     if (drafts.objectives.length === 0 && drafts.relationships.length === 0) {
       console.log('⚠️ [RESULT] No new objectives or relationships to store');
@@ -151,6 +201,130 @@ objectivesRouter.get('/', async (req: Request, res: Response) => {
 
     return res.status(500).json({
       error: 'Failed to get objectives',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// GET /api/objectives/batch?ids=a,b,c
+objectivesRouter.get('/batch', async (req: Request, res: Response) => {
+  try {
+    const parsed = getObjectivesBatchSchema.parse({ ids: req.query.ids ?? '' });
+    const objectives = await getObjectivesByIds(parsed.ids);
+
+    return res.json({
+      objectives: objectives.map(formatObjectiveForResponse),
+      total: objectives.length,
+    });
+  } catch (error) {
+    console.error('Error fetching objective batch:', error);
+
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        error: 'Validation error',
+        details: error.errors,
+      });
+    }
+
+    return res.status(500).json({
+      error: 'Failed to fetch objectives',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// POST /api/objectives/relationships
+objectivesRouter.post('/relationships', async (req: Request, res: Response) => {
+  try {
+    const payload = createRelationshipSchema.parse(req.body);
+    const result = await createObjectiveRelationshipRecord(payload);
+
+    return res.status(201).json(result);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation error', details: error.errors });
+    }
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      return res.status(409).json({ error: 'Relationship already exists for this pair and type' });
+    }
+
+    console.error('Error creating relationship:', error);
+    return res.status(500).json({
+      error: 'Failed to create relationship',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// PATCH /api/objectives/relationships/:id
+objectivesRouter.patch('/relationships/:id', async (req: Request, res: Response) => {
+  const relationshipId = req.params.id;
+
+  if (!relationshipId) {
+    return res.status(400).json({ error: 'Relationship id is required' });
+  }
+
+  try {
+    const payload = updateRelationshipSchema.parse(req.body);
+    if (payload.toId) {
+      const existing = await prisma.objectiveRelationship.findUnique({
+        where: { id: relationshipId },
+        select: { fromId: true },
+      });
+
+      if (!existing) {
+        return res.status(404).json({ error: 'Relationship not found' });
+      }
+
+      if (existing.fromId === payload.toId) {
+        return res.status(400).json({ error: 'Relationships must connect two different objectives' });
+      }
+    }
+
+    const result = await updateObjectiveRelationshipRecord(relationshipId, payload);
+    return res.json(result);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation error', details: error.errors });
+    }
+
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === 'P2002') {
+        return res.status(409).json({ error: 'Relationship already exists for this pair and type' });
+      }
+      if (error.code === 'P2025') {
+        return res.status(404).json({ error: 'Relationship not found' });
+      }
+    }
+
+    console.error('Error updating relationship:', error);
+    return res.status(500).json({
+      error: 'Failed to update relationship',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// DELETE /api/objectives/relationships/:id
+objectivesRouter.delete('/relationships/:id', async (req: Request, res: Response) => {
+  const relationshipId = req.params.id;
+
+  if (!relationshipId) {
+    return res.status(400).json({ error: 'Relationship id is required' });
+  }
+
+  try {
+    const result = await deleteObjectiveRelationshipRecord(relationshipId);
+    return res.json(result);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      return res.status(404).json({ error: 'Relationship not found' });
+    }
+
+    console.error('Error deleting relationship:', error);
+    return res.status(500).json({
+      error: 'Failed to delete relationship',
       message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
