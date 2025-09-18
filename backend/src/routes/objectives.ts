@@ -1,125 +1,114 @@
-import { Router, Request, Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
-import { extractObjectives } from '../llm/agent.js';
-import { findRelatedObjectives } from '../related/related.js';
-import { 
-  createObjective, 
-  getAllObjectives, 
+import {
+  createKnowledgeGraphEntry,
+  getKnowledgeGraphSnapshot,
+  getObjectivesByIds,
+  getObjectivesForPrompt,
+  getObjectivesWithRelations,
   searchObjectives,
-  getObjectivesForRelatedness,
-  type ObjectiveWithRelated 
+  prisma,
+  type ObjectiveDTO,
+  type ObjectiveDraft,
+  type RelationshipDraft,
 } from '../database.js';
+import {
+  ObjectivePriority,
+  ObjectiveRelationshipType,
+  ObjectiveStatus,
+} from '@prisma/client';
+import {
+  extractObjectiveGraph,
+  generateBrainInsight,
+  type AgentGraphExtraction,
+  type AgentObjective,
+  type AgentRelationship,
+} from '../llm/agent.js';
 
 export const objectivesRouter = Router();
 
-// Validation schemas
 const extractAndStoreSchema = z.object({
   text: z.string().min(1, 'Text is required'),
+  title: z.string().optional(),
 });
 
 const getObjectivesSchema = z.object({
-  limit: z.string().optional().transform(val => val ? parseInt(val, 10) : 50),
-  offset: z.string().optional().transform(val => val ? parseInt(val, 10) : 0),
+  limit: z
+    .string()
+    .optional()
+    .transform((val) => (val ? parseInt(val, 10) : 50)),
+  offset: z
+    .string()
+    .optional()
+    .transform((val) => (val ? parseInt(val, 10) : 0)),
   query: z.string().optional(),
 });
 
-// POST /api/extract-and-store
+const brainQuerySchema = z.object({
+  question: z.string().min(5, 'Ask a complete question'),
+});
+
+// POST /api/objectives/extract-and-store
 objectivesRouter.post('/extract-and-store', async (req: Request, res: Response) => {
   const startTime = Date.now();
   console.log('\n🚀 [EXTRACT-AND-STORE] Starting request...');
-  
+
   try {
-    const { text } = extractAndStoreSchema.parse(req.body);
+    const { text, title } = extractAndStoreSchema.parse(req.body);
     console.log(`📝 [INPUT] Received text: ${text.length} characters`);
-    console.log(`📝 [INPUT] Preview: "${text.substring(0, 100)}${text.length > 100 ? '...' : ''}"`);
+    console.log(`📝 [INPUT] Preview: "${text.substring(0, 140)}${text.length > 140 ? '…' : ''}"`);
 
-    // Extract objectives using LLM
-    console.log('🤖 [LLM] Sending text to agent for objective extraction...');
-    const llmStartTime = Date.now();
-    const extractedTexts = await extractObjectives(text);
-    const llmDuration = Date.now() - llmStartTime;
-    
-    console.log(`🤖 [LLM] Completed in ${llmDuration}ms`);
-    console.log(`🎯 [EXTRACTED] Found ${extractedTexts.length} objectives:`, extractedTexts);
+    const existingObjectives = await getObjectivesForPrompt(24);
+    console.log(`📚 [CONTEXT] Providing ${existingObjectives.length} objectives to the agent for grounding`);
 
-    if (extractedTexts.length === 0) {
-      console.log('⚠️  [RESULT] No objectives extracted, returning empty response');
+    console.log('🤖 [LLM] Requesting structured graph extraction...');
+    const extraction = await extractObjectiveGraph(text, {
+      title: title ?? null,
+      existingObjectives,
+    });
+
+    const drafts = await prepareObjectiveDrafts(extraction, {
+      title: title ?? null,
+      rawText: text,
+    });
+
+    if (drafts.objectives.length === 0 && drafts.relationships.length === 0) {
+      console.log('⚠️ [RESULT] No new objectives or relationships to store');
       return res.json({
         objectives: [],
         totalInserted: 0,
+        duplicatesSkipped: drafts.duplicates,
+        relationshipsCreated: 0,
       });
     }
 
-    // Get existing objectives for relatedness computation
-    console.log('🔍 [DATABASE] Fetching existing objectives for relatedness...');
-    const existingObjectives = await getObjectivesForRelatedness();
-    console.log(`🔍 [DATABASE] Found ${existingObjectives.length} existing objectives`);
-
-    // Store each objective and compute related ones
-    const objectives: ObjectiveWithRelated[] = [];
-    let duplicatesSkipped = 0;
-
-    console.log('🔄 [PROCESSING] Starting objective processing...');
-    for (let i = 0; i < extractedTexts.length; i++) {
-      const objectiveText = extractedTexts[i];
-      console.log(`\n📋 [OBJECTIVE ${i + 1}/${extractedTexts.length}] Processing: "${objectiveText}"`);
-      
-      // Check if similar objective already exists to avoid duplicates
-      const isDuplicate = existingObjectives.some(
-        existing => 
-          existing.text.toLowerCase().trim() === objectiveText.toLowerCase().trim() ||
-          calculateSimilarity(existing.text, objectiveText) > 0.85
-      );
-
-      if (isDuplicate) {
-        console.log(`⚠️  [DUPLICATE] Skipping duplicate objective: "${objectiveText}"`);
-        duplicatesSkipped++;
-        continue;
-      }
-
-      // Create new objective
-      console.log('💾 [DATABASE] Saving objective to database...');
-      const newObjective = await createObjective({ text: objectiveText });
-      console.log(`✅ [DATABASE] Saved with ID: ${newObjective.id}`);
-
-      // Find related objectives
-      console.log('🔗 [RELATEDNESS] Computing related objectives...');
-      const relatedStartTime = Date.now();
-      const related = await findRelatedObjectives(objectiveText, existingObjectives);
-      const relatedDuration = Date.now() - relatedStartTime;
-      console.log(`🔗 [RELATEDNESS] Found ${related.length} related objectives in ${relatedDuration}ms`);
-      if (related.length > 0) {
-        console.log('🔗 [RELATEDNESS] Related objectives:', related.map(r => `"${r.text}"`));
-      }
-
-      objectives.push({
-        id: newObjective.id,
-        text: newObjective.text,
-        createdAt: newObjective.createdAt,
-        related,
-      });
-
-      // Add to existing objectives for next iterations
-      existingObjectives.push({
-        id: newObjective.id,
-        text: newObjective.text,
-      });
-    }
-
-    const totalDuration = Date.now() - startTime;
-    console.log(`\n🎉 [COMPLETE] Processing finished in ${totalDuration}ms`);
-    console.log(`📊 [SUMMARY] ${objectives.length} objectives stored, ${duplicatesSkipped} duplicates skipped`);
-
-    res.json({
-      objectives,
-      totalInserted: objectives.length,
+    console.log(`💾 [DATABASE] Persisting ${drafts.objectives.length} objectives and ${drafts.relationships.length} relationships`);
+    const persistenceResult = await createKnowledgeGraphEntry({
+      rawContent: text,
+      title: extraction.title ?? title ?? null,
+      objectives: drafts.objectives,
+      relationships: drafts.relationships,
     });
 
+    const objectiveIds = persistenceResult.objectives.map((obj) => obj.id);
+    const insertedObjectives = await getObjectivesByIds(objectiveIds);
+
+    const payload = insertedObjectives.map(formatObjectiveForResponse);
+
+    const totalDuration = Date.now() - startTime;
+    console.log(`\n🎉 [COMPLETE] Stored ${payload.length} objectives in ${totalDuration}ms`);
+
+    return res.json({
+      objectives: payload,
+      totalInserted: payload.length,
+      duplicatesSkipped: drafts.duplicates,
+      relationshipsCreated: persistenceResult.relationships.length,
+    });
   } catch (error) {
     const totalDuration = Date.now() - startTime;
     console.error(`\n❌ [ERROR] Request failed after ${totalDuration}ms`);
     console.error('❌ [ERROR] Details:', error);
-    
+
     if (error instanceof z.ZodError) {
       console.error('❌ [VALIDATION] Invalid input data:', error.errors);
       return res.status(400).json({
@@ -128,8 +117,7 @@ objectivesRouter.post('/extract-and-store', async (req: Request, res: Response) 
       });
     }
 
-    console.error('❌ [UNEXPECTED] Unexpected error occurred');
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Failed to extract and store objectives',
       message: error instanceof Error ? error.message : 'Unknown error',
     });
@@ -141,30 +129,19 @@ objectivesRouter.get('/', async (req: Request, res: Response) => {
   try {
     const { limit, offset, query } = getObjectivesSchema.parse(req.query);
 
-    let objectives;
-    
-    if (query && query.length > 0) {
-      objectives = await searchObjectives(query, limit, offset);
-    } else {
-      objectives = await getAllObjectives();
-      // Apply pagination manually for getAllObjectives
-      objectives = objectives.slice(offset, offset + limit);
-    }
+    const objectives = query && query.length > 0
+      ? await searchObjectives(query, limit, offset)
+      : await getObjectivesWithRelations(limit, offset);
 
-    res.json({
-      objectives: objectives.map(obj => ({
-        id: obj.id,
-        text: obj.text,
-        createdAt: obj.createdAt,
-      })),
+    return res.json({
+      objectives: objectives.map(formatObjectiveForResponse),
       total: objectives.length,
       limit,
       offset,
     });
-
   } catch (error) {
     console.error('Error getting objectives:', error);
-    
+
     if (error instanceof z.ZodError) {
       return res.status(400).json({
         error: 'Validation error',
@@ -172,20 +149,343 @@ objectivesRouter.get('/', async (req: Request, res: Response) => {
       });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       error: 'Failed to get objectives',
       message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
 });
 
-// Simple similarity function for duplicate detection
-function calculateSimilarity(text1: string, text2: string): number {
-  const words1 = new Set(text1.toLowerCase().split(/\s+/));
-  const words2 = new Set(text2.toLowerCase().split(/\s+/));
-  
-  const intersection = new Set([...words1].filter(word => words2.has(word)));
-  const union = new Set([...words1, ...words2]);
-  
-  return union.size > 0 ? intersection.size / union.size : 0;
+// GET /api/objectives/graph
+objectivesRouter.get('/graph', async (_req: Request, res: Response) => {
+  try {
+    const snapshot = await getKnowledgeGraphSnapshot();
+    return res.json(snapshot);
+  } catch (error) {
+    console.error('Error fetching knowledge graph snapshot:', error);
+    return res.status(500).json({
+      error: 'Failed to load knowledge graph',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// POST /api/objectives/brain
+objectivesRouter.post('/brain', async (req: Request, res: Response) => {
+  try {
+    const { question } = brainQuerySchema.parse(req.body);
+    const snapshot = await getKnowledgeGraphSnapshot();
+    const answer = await generateBrainResponse(question, snapshot);
+
+    return res.json({
+      answer,
+      totalObjectives: snapshot.objectives.length,
+      totalRelationships: snapshot.relationships.length,
+    });
+  } catch (error) {
+    console.error('Error generating brain response:', error);
+
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
+        error: 'Validation error',
+        details: error.errors,
+      });
+    }
+
+    return res.status(500).json({
+      error: 'Failed to produce answer',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+async function prepareObjectiveDrafts(
+  extraction: AgentGraphExtraction,
+  meta: { title: string | null; rawText: string },
+): Promise<{
+  objectives: ObjectiveDraft[];
+  relationships: RelationshipDraft[];
+  duplicates: number;
+}> {
+  const seenTexts = new Set<string>();
+  const normalizedStatements = extraction.objectives.map((objective) => normalize(objective.statement));
+
+  const existingMatches = normalizedStatements.length > 0
+    ? await prisma.objective.findMany({
+        where: {
+          OR: normalizedStatements.map((val) => ({
+            text: {
+              equals: val.original,
+              mode: 'insensitive' as const,
+            },
+          })),
+        },
+        select: { text: true },
+      })
+    : [];
+
+  for (const match of existingMatches) {
+    seenTexts.add(normalize(match.text).normalized);
+  }
+
+  const objectives: ObjectiveDraft[] = [];
+  let duplicates = 0;
+
+  for (const objective of extraction.objectives) {
+    const normalized = normalize(objective.statement);
+    if (normalized.normalized.length === 0) continue;
+
+    if (seenTexts.has(normalized.normalized)) {
+      duplicates += 1;
+      continue;
+    }
+
+    seenTexts.add(normalized.normalized);
+    objectives.push(toObjectiveDraft(objective, meta));
+  }
+
+  const validKeys = new Set(objectives.map((objective) => objective.key));
+  const relationships = (extraction.relationships ?? [])
+    .map((relationship) => toRelationshipDraft(relationship))
+    .filter((rel): rel is RelationshipDraft => {
+      if (!rel) return false;
+      const fromValid = rel.from.startsWith('existing:') || validKeys.has(rel.from);
+      const toValid = rel.to.startsWith('existing:') || validKeys.has(rel.to);
+      return fromValid && toValid;
+    });
+
+  return { objectives, relationships, duplicates };
+}
+
+function toObjectiveDraft(objective: AgentObjective, meta: { title: string | null; rawText: string }): ObjectiveDraft {
+  return {
+    key: objective.key,
+    text: objective.statement.trim(),
+    context: objective.context?.trim() ?? null,
+    category: objective.category ?? null,
+    timeframe: objective.timeframe ?? null,
+    status: parseStatus(objective.status),
+    priority: parsePriority(objective.priority),
+    confidence: parseConfidence(objective.confidence),
+    owner: objective.owner?.trim() ?? null,
+    metrics: sanitizeList(objective.metrics),
+    tags: sanitizeList(objective.tags, { lowercase: true }),
+    sourceLabel: objective.sourceLabel?.trim() ?? meta.title ?? 'Unlabeled intake',
+    sourceExcerpt: objective.sourceExcerpt?.trim() ?? null,
+  } satisfies ObjectiveDraft;
+}
+
+function toRelationshipDraft(relationship: AgentRelationship): RelationshipDraft | null {
+  const type = parseRelationshipType(relationship.type);
+  if (!type) return null;
+
+  return {
+    from: relationship.from,
+    to: relationship.to,
+    type,
+    rationale: relationship.rationale?.trim() ?? null,
+    weight: parseWeight(relationship.weight),
+  } satisfies RelationshipDraft;
+}
+
+function formatObjectiveForResponse(objective: ObjectiveDTO) {
+  return {
+    id: objective.id,
+    text: objective.text,
+    createdAt: objective.createdAt,
+    updatedAt: objective.updatedAt,
+    context: objective.context,
+    category: objective.category,
+    timeframe: objective.timeframe,
+    status: objective.status,
+    priority: objective.priority,
+    confidence: objective.confidence,
+    owner: objective.owner,
+    metrics: objective.metrics,
+    tags: objective.tags,
+    sourceLabel: objective.sourceLabel,
+    sourceExcerpt: objective.sourceExcerpt,
+    related: objective.related.map((relation) => ({
+      id: relation.target.id,
+      text: relation.target.text,
+      status: relation.target.status,
+      priority: relation.target.priority,
+      type: relation.type,
+      rationale: relation.rationale,
+      weight: relation.weight,
+    })),
+  };
+}
+
+interface NormalizedText {
+  original: string;
+  normalized: string;
+}
+
+function normalize(statement: string): NormalizedText {
+  const original = statement.trim();
+  const normalized = original.toLowerCase().replace(/\s+/g, ' ');
+  return { original, normalized };
+}
+
+function parseStatus(value?: string | null): ObjectiveStatus | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toUpperCase();
+  if (normalized in ObjectiveStatus) {
+    return ObjectiveStatus[normalized as keyof typeof ObjectiveStatus];
+  }
+
+  switch (normalized) {
+    case 'IN PROGRESS':
+    case 'IN_PROGRESS':
+    case 'ACTIVE':
+      return ObjectiveStatus.ACTIVE;
+    case 'PLANNED':
+    case 'PLANNING':
+      return ObjectiveStatus.PLANNED;
+    case 'BLOCKED':
+    case 'ON HOLD':
+    case 'ON_HOLD':
+      return ObjectiveStatus.BLOCKED;
+    case 'DONE':
+    case 'COMPLETE':
+    case 'COMPLETED':
+      return ObjectiveStatus.COMPLETE;
+    case 'IDEA':
+    case 'PROPOSED':
+    default:
+      return ObjectiveStatus.PROPOSED;
+  }
+}
+
+function parsePriority(value?: string | null): ObjectivePriority | undefined {
+  if (!value) return undefined;
+  const normalized = value.trim().toUpperCase();
+  if (normalized in ObjectivePriority) {
+    return ObjectivePriority[normalized as keyof typeof ObjectivePriority];
+  }
+
+  switch (normalized) {
+    case 'P0':
+    case 'CRITICAL':
+    case 'HIGHEST':
+      return ObjectivePriority.HIGH;
+    case 'P2':
+    case 'LOW':
+      return ObjectivePriority.LOW;
+    default:
+      return ObjectivePriority.MEDIUM;
+  }
+}
+
+function parseRelationshipType(value?: string | null): ObjectiveRelationshipType | null {
+  if (!value) return null;
+  const normalized = value.trim().toUpperCase().replace(/\s+/g, '_');
+
+  if (normalized in ObjectiveRelationshipType) {
+    return ObjectiveRelationshipType[normalized as keyof typeof ObjectiveRelationshipType];
+  }
+
+  switch (normalized) {
+    case 'SUPPORTS':
+    case 'ALIGNS_WITH':
+      return ObjectiveRelationshipType.SUPPORTS;
+    case 'UNBLOCKS':
+    case 'BLOCKED_BY':
+    case 'DEPENDS_ON':
+      return ObjectiveRelationshipType.DEPENDS_ON;
+    case 'RELATES_TO':
+    case 'CONNECTED_TO':
+      return ObjectiveRelationshipType.RELATES_TO;
+    case 'BLOCKS':
+      return ObjectiveRelationshipType.BLOCKS;
+    case 'INFORMS':
+    case 'INSPIRES':
+      return ObjectiveRelationshipType.INFORMS;
+    default:
+      return null;
+  }
+}
+
+function parseConfidence(value?: string | number | null): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && !Number.isNaN(value)) {
+    return clamp(value);
+  }
+
+  const parsed = parseFloat(String(value).replace(/[^0-9.]/g, ''));
+  if (Number.isNaN(parsed)) return null;
+
+  return parsed > 1 ? clamp(parsed / 100) : clamp(parsed);
+}
+
+function parseWeight(value?: string | number | null): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && !Number.isNaN(value)) {
+    return clamp(value);
+  }
+
+  const parsed = parseFloat(String(value));
+  if (Number.isNaN(parsed)) return null;
+  return clamp(parsed);
+}
+
+function clamp(value: number): number {
+  if (Number.isNaN(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+function sanitizeList(values: unknown, opts: { lowercase?: boolean } = {}): string[] {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set<string>();
+  const output: string[] = [];
+
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    const normalized = opts.lowercase ? trimmed.toLowerCase() : trimmed;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    output.push(normalized);
+  }
+
+  return output;
+}
+
+async function generateBrainResponse(question: string, snapshot: Awaited<ReturnType<typeof getKnowledgeGraphSnapshot>>): Promise<string> {
+  if (snapshot.objectives.length === 0) {
+    return 'The knowledge graph is empty. Add strategic objectives to ask contextual questions.';
+  }
+
+  const objectivesDigest = snapshot.objectives
+    .slice(0, 30)
+    .map((objective) => {
+      const tags = objective.tags.length > 0 ? ` tags: ${objective.tags.join(', ')}` : '';
+      const timeframe = objective.timeframe ? ` timeframe: ${objective.timeframe}` : '';
+      return `• ${objective.text} (status: ${objective.status}, priority: ${objective.priority}${timeframe}${tags})`;
+    })
+    .join('\n');
+
+  const relationshipsDigest = snapshot.relationships
+    .slice(0, 60)
+    .map((rel) => `${rel.type} ${rel.fromId} -> ${rel.toId}${rel.rationale ? ` (${rel.rationale})` : ''}`)
+    .join('\n');
+
+  const prompt = `You are the strategic memory for Visium. Users will ask about the current state of their objectives. Base your answer strictly on the provided objectives and relationships. Provide direct, actionable responses.
+
+Objectives:\n${objectivesDigest}
+
+Connections:\n${relationshipsDigest || 'none recorded yet'}
+
+Question: ${question}
+
+Respond with:
+- A focused answer (2-4 sentences)
+- 2-3 suggested next actions when applicable
+- Call out data gaps if the graph lacks enough information.`;
+
+  return generateBrainInsight(prompt);
 }

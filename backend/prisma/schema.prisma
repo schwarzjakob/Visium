@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -10,10 +7,73 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum ObjectiveStatus {
+  PROPOSED
+  PLANNED
+  ACTIVE
+  BLOCKED
+  COMPLETE
+}
+
+enum ObjectivePriority {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum ObjectiveRelationshipType {
+  SUPPORTS
+  DEPENDS_ON
+  RELATES_TO
+  BLOCKS
+  INFORMS
+}
+
+model KnowledgeEntry {
+  id         String      @id @default(uuid())
+  title      String?
+  rawContent String
+  createdAt  DateTime    @default(now())
+  objectives Objective[]
+
+  @@map("knowledge_entries")
+}
+
 model Objective {
-  id        String   @id @default(uuid())
-  text      String
-  createdAt DateTime @default(now())
+  id             String                   @id @default(uuid())
+  text           String
+  context        String?
+  category       String?
+  timeframe      String?
+  status         ObjectiveStatus          @default(PROPOSED)
+  priority       ObjectivePriority        @default(MEDIUM)
+  confidence     Float?
+  owner          String?
+  metrics        String[]                 @default([])
+  tags           String[]                 @default([])
+  sourceLabel    String?
+  sourceExcerpt  String?
+  entryId        String?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+  entry          KnowledgeEntry?          @relation(fields: [entryId], references: [id])
+  outgoingLinks  ObjectiveRelationship[]  @relation("ObjectiveFrom")
+  incomingLinks  ObjectiveRelationship[]  @relation("ObjectiveTo")
 
   @@map("objectives")
+}
+
+model ObjectiveRelationship {
+  id        String                     @id @default(uuid())
+  fromId    String
+  toId      String
+  type      ObjectiveRelationshipType
+  rationale String?
+  weight    Float?
+  createdAt DateTime                   @default(now())
+  from      Objective                  @relation("ObjectiveFrom", fields: [fromId], references: [id])
+  to        Objective                  @relation("ObjectiveTo", fields: [toId], references: [id])
+
+  @@unique([fromId, toId, type])
+  @@map("objective_relationships")
 }

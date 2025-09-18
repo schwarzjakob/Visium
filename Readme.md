@@ -77,24 +77,6 @@ Visium is an AI-powered strategy assistant that transforms scattered discussions
 
 ## Development Tasks
 
-### ✅ Completed
-1. ✅ Scaffold /frontend (Vite+React+TS) and /backend (Node+Express+TS)
-2. ✅ Create root README with quick start and tasks
-3. ✅ Setup backend env + /api/health endpoint
-4. ✅ Create Prisma schema with Objective model
-5. ✅ Implement ollamaClient.ts
-6. ✅ Implement agent.ts with system prompt
-7. ✅ Implement related.ts for relatedness computation
-8. ✅ Implement POST /api/extract-and-store endpoint
-9. ✅ Implement GET /api/objectives endpoint
-10. ✅ Create frontend shell with two tabs
-11. ✅ Implement Add Knowledge page end-to-end
-12. ✅ Create Knowledge page placeholder
-13. ✅ Polish loading states and error handling
-14. ✅ Update README with completion marks
-
-🎉 **MVP Complete!** All core features have been implemented and are ready for testing.
-
 ## API Endpoints
 
 - `POST /api/extract-and-store` - Submit raw text, get extracted objectives
@@ -106,18 +88,5 @@ Visium is an AI-powered strategy assistant that transforms scattered discussions
 ```
 visium/
 ├── frontend/          # React + Vite + TypeScript
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   └── styles/
-│   └── package.json
 ├── backend/           # Node + Express + TypeScript
-│   ├── src/
-│   │   ├── llm/      # Ollama client and agent
-│   │   ├── related/  # Relatedness computation
-│   │   ├── routes/   # API endpoints
-│   │   └── server.ts
-│   ├── prisma/       # Database schema
-│   └── package.json
-└── README.md
 ```

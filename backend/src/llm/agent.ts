@@ -1,85 +1,195 @@
+import type { ObjectiveSummaryForPrompt } from '../database.js';
 import { ollamaClient } from './ollamaClient.js';
 
-const AGENT_SYSTEM_PROMPT = `You are Visium, an AI strategy assistant. Transform raw notes or discussions into a small set of clear, self-contained **objectives** that are directly useful for strategy and alignment. Work only with the provided input. Do not invent, and do not output vague placeholders like "I have a startup idea."
+const GRAPH_SYSTEM_PROMPT = `You are Visium, an elite strategy intelligence agent. Turn raw notes into a coherent, connected strategic knowledge graph. Only capture well-formed objectives that describe real initiatives, measurable outcomes, or critical dependencies. Reject fluffy ideas like "I have a startup idea" or generic aspirations.
 
 Return strict JSON:
-{ "candidates": [ { "text": string } ] }
-
-Rules:
-- Extract only meaningful, actionable objectives (concrete goals, plans, commitments).
-- Each objective must be interpretable without external context.
-- Keep each objective semantically whole. If multiple sentences express one clear objective, merge them.
-- Remove filler, meta comments, or incomplete thoughts.
-- 5–25 words each (flexible if needed to preserve meaning).
-- Merge ultra-short fragments into the nearest relevant objective; avoid duplicates.
-- Produce 3–15 candidates total.`;
-
-interface ExtractedObjectives {
-  candidates: Array<{ text: string }>;
+{
+  "title": string | null,
+  "objectives": [
+    {
+      "key": string,                  // Unique reference like OBJ_A
+      "statement": string,            // 12-40 words, self-contained objective
+      "context": string | null,       // Why this matters / supporting detail
+      "category": string | null,      // e.g. Growth, Product, Revenue, Operations
+      "timeframe": string | null,     // e.g. Q2 2025, 12 weeks, ASAP
+      "status": "PROPOSED"|"PLANNED"|"ACTIVE"|"BLOCKED"|"COMPLETE",
+      "priority": "HIGH"|"MEDIUM"|"LOW",
+      "confidence": number | null,    // 0-1 probability the initiative is correct
+      "owner": string | null,         // Responsible team or person from the notes
+      "metrics": string[],            // Leading metrics or success signals
+      "tags": string[],               // Keywords for later retrieval
+      "sourceLabel": string | null,   // Title/name of the source document if present
+      "sourceExcerpt": string | null  // Short verbatim snippet backing the objective
+    }
+  ],
+  "relationships": [
+    {
+      "from": string,                 // key or existing:<id>
+      "to": string,                   // key or existing:<id>
+      "type": "SUPPORTS"|"DEPENDS_ON"|"RELATES_TO"|"BLOCKS"|"INFORMS",
+      "rationale": string | null,
+      "weight": number | null         // 0-1 strength / confidence of the link
+    }
+  ]
 }
 
-export async function extractObjectives(raw: string): Promise<string[]> {
-  console.log('🤖 [AGENT] Building prompt for LLM...');
-  
-  const userPrompt = `Extract objectives from the following input:
+Rules:
+- Produce between 2 and 8 objectives unless fewer genuinely exist.
+- Each objective must survive in isolation; include differentiating context.
+- Prefer linking new objectives to existing ones when relevant (use existing:<id>).
+- Only create relationships with clear causal links. Avoid noisy or redundant edges.
+- Derive metrics/tags from the text; do not fabricate data.
+- Use source excerpts sparingly (≤ 220 chars) to justify non-obvious claims.
+- Never invent owners or timeframes if the source lacks them.`;
 
-<<<INPUT
+const BRAIN_SYSTEM_PROMPT = `You are Visium's strategy brain. Synthesise the institutional knowledge graph into decisive, executive-ready guidance. Base every statement on the provided context. Identify momentum, gaps, and next bets without speculation.`;
+
+export interface AgentObjective {
+  key: string;
+  statement: string;
+  context?: string | null;
+  category?: string | null;
+  timeframe?: string | null;
+  status?: string | null;
+  priority?: string | null;
+  confidence?: number | string | null;
+  owner?: string | null;
+  metrics?: string[];
+  tags?: string[];
+  sourceLabel?: string | null;
+  sourceExcerpt?: string | null;
+}
+
+export interface AgentRelationship {
+  from: string;
+  to: string;
+  type: string;
+  rationale?: string | null;
+  weight?: number | string | null;
+}
+
+export interface AgentGraphExtraction {
+  mode: 'graph-extraction';
+  title: string | null;
+  objectives: AgentObjective[];
+  relationships: AgentRelationship[];
+}
+
+interface ExtractObjectiveOptions {
+  title: string | null;
+  existingObjectives: ObjectiveSummaryForPrompt[];
+}
+
+export async function extractObjectiveGraph(
+  raw: string,
+  options: ExtractObjectiveOptions,
+): Promise<AgentGraphExtraction> {
+  console.log('🤖 [AGENT] Building graph extraction prompt...');
+
+  const existingSection = buildExistingObjectivesSection(options.existingObjectives);
+  const userPrompt = `Existing objectives for reference and linking (use the provided IDs when appropriate):
+${existingSection}
+
+Raw intake:
+<<<SOURCE
 ${raw}
 >>>
 
-Return JSON exactly as specified. No preamble, no commentary.`;
+Respond with JSON exactly matching the declared schema. Do not add commentary.`;
 
-  const fullPrompt = `${AGENT_SYSTEM_PROMPT}\n\n${userPrompt}`;
+  const fullPrompt = `${GRAPH_SYSTEM_PROMPT}\n\n${userPrompt}`;
+  const rawResponse = await callOllama(fullPrompt);
+
+  const parsed = parseAgentResponse(rawResponse);
+  const objectives = parsed.objectives ?? [];
+  const relationships = parsed.relationships ?? [];
+
+  // Ensure keys exist and are unique
+  const usedKeys = new Set<string>();
+  for (const objective of objectives) {
+    if (!objective.key || usedKeys.has(objective.key)) {
+      objective.key = generateKey(usedKeys.size + 1);
+    }
+    usedKeys.add(objective.key);
+  }
+
+  return {
+    mode: 'graph-extraction',
+    title: parsed.title ?? options.title ?? null,
+    objectives,
+    relationships,
+  } satisfies AgentGraphExtraction;
+}
+
+export async function generateBrainInsight(prompt: string): Promise<string> {
+  console.log('🧠 [BRAIN] Generating strategic insight...');
+  const fullPrompt = `${BRAIN_SYSTEM_PROMPT}\n\nContext:\n${prompt}\n\nAnswer with short paragraphs followed by bullet suggestions when relevant.`;
+  const rawResponse = await callOllama(fullPrompt);
+  return rawResponse.trim();
+}
+
+async function callOllama(prompt: string): Promise<string> {
   console.log('🤖 [AGENT] Prompt prepared, calling Ollama...');
-  console.log('🤖 [AGENT] Using model:', process.env.OLLAMA_MODEL || 'default');
+  console.log('🤖 [AGENT] Prompt length:', prompt.length);
+  return await ollamaClient.generate(prompt);
+}
+
+function buildExistingObjectivesSection(existingObjectives: ObjectiveSummaryForPrompt[]): string {
+  if (existingObjectives.length === 0) {
+    return '• (none)';
+  }
+
+  return existingObjectives
+    .map((objective, index) => {
+      const tags = objective.tags.length > 0 ? ` | tags: ${objective.tags.join(', ')}` : '';
+      const timeframe = objective.timeframe ? ` | timeframe: ${objective.timeframe}` : '';
+      const category = objective.category ? ` | category: ${objective.category}` : '';
+      return `• existing:${objective.id} → ${objective.text} (status: ${objective.status}, priority: ${objective.priority}${timeframe}${category}${tags}) [updated ${objective.updatedAt.toISOString()}]`;
+    })
+    .join('\n');
+}
+
+interface ParsedAgentResponse {
+  title?: string | null;
+  objectives?: AgentObjective[];
+  relationships?: AgentRelationship[];
+}
+
+function parseAgentResponse(response: string): ParsedAgentResponse {
+  console.log('🤖 [AGENT] Raw response received. Sample:', response.substring(0, 200));
+  let jsonString = response.trim();
+
+  if (jsonString.startsWith('```json')) {
+    jsonString = jsonString.replace(/^```json\s*/, '').replace(/\s*```$/, '');
+  } else if (jsonString.startsWith('```')) {
+    jsonString = jsonString.replace(/^```\s*/, '').replace(/\s*```$/, '');
+  }
+
+  // Attempt to isolate JSON object if extra preamble slipped in
+  const firstBrace = jsonString.indexOf('{');
+  const lastBrace = jsonString.lastIndexOf('}');
+  if (firstBrace > 0 && lastBrace > firstBrace) {
+    jsonString = jsonString.slice(firstBrace, lastBrace + 1);
+  }
 
   try {
-    const response = await ollamaClient.generate(fullPrompt);
-    console.log('🤖 [AGENT] Received response from Ollama');
-    console.log('🤖 [AGENT] Raw response:', response.substring(0, 200) + (response.length > 200 ? '...' : ''));
-    
-    // Try to extract JSON from the response, handling common formatting issues
-    let jsonString = response.trim();
-    console.log('🤖 [AGENT] Cleaning response for JSON parsing...');
-    
-    // Remove markdown code blocks if present
-    if (jsonString.startsWith('```json')) {
-      jsonString = jsonString.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-      console.log('🤖 [AGENT] Removed json code block markers');
-    } else if (jsonString.startsWith('```')) {
-      jsonString = jsonString.replace(/^```\s*/, '').replace(/\s*```$/, '');
-      console.log('🤖 [AGENT] Removed generic code block markers');
+    const parsed = JSON.parse(jsonString);
+    if (typeof parsed !== 'object' || parsed === null) {
+      throw new Error('Parsed response is not an object');
     }
-    
-    console.log('🤖 [AGENT] Attempting to parse JSON...');
-    console.log('🤖 [AGENT] JSON string:', jsonString.substring(0, 300) + (jsonString.length > 300 ? '...' : ''));
-    
-    // Parse the JSON
-    const parsed = JSON.parse(jsonString) as ExtractedObjectives;
-    console.log('🤖 [AGENT] JSON parsed successfully');
-    
-    if (!parsed.candidates || !Array.isArray(parsed.candidates)) {
-      console.error('🤖 [AGENT] Invalid response format: missing or invalid candidates array');
-      console.error('🤖 [AGENT] Parsed object:', parsed);
-      throw new Error('Invalid response format: missing or invalid candidates array');
-    }
-    
-    console.log(`🤖 [AGENT] Found ${parsed.candidates.length} candidate objectives`);
-    
-    const objectives = parsed.candidates
-      .map(candidate => candidate.text?.trim())
-      .filter(text => text && text.length > 0)
-      .slice(0, 15); // Ensure max 15 objectives
-    
-    console.log(`🤖 [AGENT] Filtered to ${objectives.length} valid objectives`);
-    console.log('🤖 [AGENT] Final objectives:', objectives);
-    
-    return objectives;
-      
+
+    return parsed as ParsedAgentResponse;
   } catch (error) {
-    console.error('❌ [AGENT] Error extracting objectives:', error);
-    console.error('❌ [AGENT] Raw response that caused error:', response);
-    console.error('❌ [AGENT] JSON string that failed parsing:', jsonString);
-    throw new Error(`Failed to extract objectives: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.error('❌ [AGENT] Failed to parse JSON response');
+    console.error('❌ [AGENT] JSON input:', jsonString);
+    throw new Error(`Failed to parse agent response: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
+}
+
+function generateKey(index: number): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  const letter = alphabet[(index - 1) % alphabet.length];
+  const cycle = Math.floor((index - 1) / alphabet.length);
+  return cycle === 0 ? `OBJ_${letter}` : `OBJ_${cycle + 1}${letter}`;
 }

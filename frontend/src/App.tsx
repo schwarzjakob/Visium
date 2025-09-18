@@ -1,12 +1,26 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import AddKnowledge from './pages/AddKnowledge';
+import Refine from './pages/Refine';
 import Knowledge from './pages/Knowledge';
+import type { Ticket } from './types/objectives';
 import './App.css';
 
-type Tab = 'add-knowledge' | 'knowledge';
+type Tab = 'capture' | 'refine' | 'explore';
 
 function App() {
-  const [activeTab, setActiveTab] = useState<Tab>('add-knowledge');
+  const [activeTab, setActiveTab] = useState<Tab>('capture');
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+
+  const handleProcessed = useCallback((nextTickets: Ticket[]) => {
+    setTickets(nextTickets);
+    setActiveTab('refine');
+  }, []);
+
+  const handleUpdateTicket = useCallback((index: number, updater: (ticket: Ticket) => Ticket) => {
+    setTickets((prev) =>
+      prev.map((ticket, ticketIndex) => (ticketIndex === index ? updater(ticket) : ticket)),
+    );
+  }, []);
 
   return (
     <div className="app-shell">
@@ -25,18 +39,25 @@ function App() {
 
           <nav className="hero__tabs" aria-label="Primary">
             <button
-              className={activeTab === 'add-knowledge' ? 'hero__tab hero__tab--active' : 'hero__tab'}
-              onClick={() => setActiveTab('add-knowledge')}
+              className={activeTab === 'capture' ? 'hero__tab hero__tab--active' : 'hero__tab'}
+              onClick={() => setActiveTab('capture')}
               type="button"
             >
-              Add Knowledge
+              Capture
             </button>
             <button
-              className={activeTab === 'knowledge' ? 'hero__tab hero__tab--active' : 'hero__tab'}
-              onClick={() => setActiveTab('knowledge')}
+              className={activeTab === 'refine' ? 'hero__tab hero__tab--active' : 'hero__tab'}
+              onClick={() => setActiveTab('refine')}
               type="button"
             >
-              Knowledge
+              Refine
+            </button>
+            <button
+              className={activeTab === 'explore' ? 'hero__tab hero__tab--active' : 'hero__tab'}
+              onClick={() => setActiveTab('explore')}
+              type="button"
+            >
+              Explore
             </button>
           </nav>
         </div>
@@ -44,8 +65,9 @@ function App() {
 
       <main className="main">
         <div className="container main__content">
-          {activeTab === 'add-knowledge' && <AddKnowledge />}
-          {activeTab === 'knowledge' && <Knowledge />}
+          {activeTab === 'capture' && <AddKnowledge onProcessed={handleProcessed} />}
+          {activeTab === 'refine' && <Refine tickets={tickets} onUpdate={handleUpdateTicket} />}
+          {activeTab === 'explore' && <Knowledge />}
         </div>
       </main>
 
