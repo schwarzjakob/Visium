@@ -80,7 +80,7 @@ Visium is an AI-powered strategy assistant that transforms scattered discussions
 - Relations are not detected
 - Tags are not detected
 - Rejected Statements still show up in the explore canvas/database (maybe)
-- Nodes can't be deleted
+- Unrefined statements are stateless and disapear from the refinement tab on refresh
 - I assume nodes should be vertical, as the structure of OKRs is hierarchical and not procedural
 
 ## Feature Ideas

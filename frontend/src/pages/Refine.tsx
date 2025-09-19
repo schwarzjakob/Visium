@@ -454,9 +454,19 @@ export default function Refine({ tickets, onUpdate }: RefineProps) {
 
           {relationshipError && !relationshipForm && <p className="tickets__relation-error">{relationshipError}</p>}
 
-          {currentTicket.related.length > 0 ? (
+          {(() => {
+            const validRelations = currentTicket.related.filter(
+              (relation): relation is ObjectiveRelatedItem & { target: ObjectiveRelationTarget } =>
+                Boolean(relation && relation.target && relation.target.id && relation.target.text),
+            );
+
+            if (validRelations.length === 0) {
+              return <p className="tickets__related-empty">No relationships yet.</p>;
+            }
+
+            return (
             <ul>
-              {currentTicket.related.map((related) => (
+              {validRelations.map((related) => (
                 <li key={related.id}>
                   <div>
                     <strong>{relationshipTypeLabel(related.type)}</strong>
@@ -464,7 +474,11 @@ export default function Refine({ tickets, onUpdate }: RefineProps) {
                     {related.rationale && <small>{related.rationale}</small>}
                   </div>
                   <div className="tickets__relation-actions">
-                    <button type="button" className="tickets__secondary" onClick={() => openEditRelationship(related)}>
+                    <button
+                      type="button"
+                      className="tickets__secondary"
+                      onClick={() => openEditRelationship(related)}
+                    >
                       Edit link
                     </button>
                     <button
@@ -478,9 +492,8 @@ export default function Refine({ tickets, onUpdate }: RefineProps) {
                 </li>
               ))}
             </ul>
-          ) : (
-            <p className="tickets__related-empty">No relationships yet.</p>
-          )}
+            );
+          })()}
 
           {relationshipForm && (
             <div className="tickets__relation-form">

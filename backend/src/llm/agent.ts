@@ -1,5 +1,6 @@
 import type { ObjectiveSummaryForPrompt } from '../database.js';
 import { ollamaClient } from './ollamaClient.js';
+import { jsonrepair } from 'jsonrepair';
 
 const GRAPH_SYSTEM_PROMPT = `You are Visium, an elite strategy intelligence agent. Turn raw notes into a coherent, connected strategic knowledge graph. Only capture well-formed objectives that describe real initiatives, measurable outcomes, or critical dependencies. Reject fluffy ideas like "I have a startup idea" or generic aspirations.
 
@@ -181,9 +182,25 @@ function parseAgentResponse(response: string): ParsedAgentResponse {
 
     return parsed as ParsedAgentResponse;
   } catch (error) {
-    console.error('❌ [AGENT] Failed to parse JSON response');
-    console.error('❌ [AGENT] JSON input:', jsonString);
-    throw new Error(`Failed to parse agent response: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    console.warn('❌ [AGENT] Initial JSON parse failed, attempting repair...');
+    try {
+      const repaired = jsonrepair(jsonString);
+      const parsed = JSON.parse(repaired);
+      if (typeof parsed !== 'object' || parsed === null) {
+        throw new Error('Parsed response is not an object after repair');
+      }
+
+      console.warn('✅ [AGENT] JSON repair succeeded.');
+      return parsed as ParsedAgentResponse;
+    } catch (repairError) {
+      console.error('❌ [AGENT] Failed to parse JSON response');
+      console.error('❌ [AGENT] JSON input:', jsonString);
+      throw new Error(
+        `Failed to parse agent response: ${
+          repairError instanceof Error ? repairError.message : 'Unknown error after repair attempt'
+        }`,
+      );
+    }
   }
 }
 
