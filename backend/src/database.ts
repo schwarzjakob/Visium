@@ -483,3 +483,17 @@ export async function deleteObjectiveRelationshipRecord(id: string): Promise<{ i
 
   return relationship;
 }
+
+export async function deleteObjectiveById(id: string): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.objectiveRelationship.deleteMany({
+      where: {
+        OR: [{ fromId: id }, { toId: id }],
+      },
+    });
+
+    await tx.objective.delete({
+      where: { id },
+    });
+  });
+}

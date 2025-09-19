@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import SaveIcon from '@mui/icons-material/Save';
 import ReactFlow, {
   Background,
   Controls,
@@ -9,6 +10,7 @@ import ReactFlow, {
   type Node,
   type NodeChange,
   Position,
+  type XYPosition,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
@@ -37,9 +39,12 @@ interface GraphSnapshot {
 
 interface PopoverRelation {
   id: string;
+  fromId: string;
+  toId: string;
   type: string;
   rationale: string | null;
-  target: GraphObjective;
+  other: GraphObjective;
+  direction: 'outgoing' | 'incoming';
 }
 
 type FlowNode = Node<{ label: string; status: string; objective: GraphObjective }>;
@@ -50,6 +55,7 @@ const NODE_LIMIT = 24;
 const RELATIONSHIP_TYPES = ['SUPPORTS', 'DEPENDS_ON', 'RELATES_TO', 'BLOCKS', 'INFORMS'] as const;
 type RelationshipType = (typeof RELATIONSHIP_TYPES)[number];
 const reactFlowStyle: CSSProperties = { width: '100%', height: '100%' };
+const LAYOUT_STORAGE_KEY = 'visium-explore-layout';
 
 function statusColor(status: string): string {
   switch (status?.toUpperCase()) {
@@ -97,6 +103,8 @@ export default function Knowledge() {
   const [nodes, setNodes] = useState<FlowNode[]>([]);
   const [edges, setEdges] = useState<FlowEdge[]>([]);
   const [connectionForm, setConnectionForm] = useState<{
+    mode: 'create' | 'edit';
+    relationshipId?: string;
     sourceId: string;
     targetId: string;
     type: RelationshipType;
@@ -104,6 +112,21 @@ export default function Knowledge() {
   } | null>(null);
   const [connectionSaving, setConnectionSaving] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [hasUnsavedLayout, setHasUnsavedLayout] = useState(false);
+  const savedLayoutRef = useRef<Record<string, XYPosition>>({});
+  const layoutInitialisedRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LAYOUT_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, XYPosition>;
+        savedLayoutRef.current = parsed;
+      }
+    } catch (err) {
+      console.warn('Failed to load saved layout', err);
+    }
+  }, []);
 
   const refreshSnapshot = useCallback(async () => {
     setLoading(true);
@@ -119,6 +142,7 @@ export default function Knowledge() {
       setSnapshot(data);
       if (data.objectives.length === 0) {
         setSelectedId(null);
+        layoutInitialisedRef.current = false;
       }
     } catch (err) {
       console.error('Error loading knowledge graph:', err);
@@ -168,6 +192,7 @@ export default function Knowledge() {
 
     const radius = GRAPH_SIZE / 2 - 120;
     const center = GRAPH_SIZE / 2;
+    const isInitial = !layoutInitialisedRef.current;
 
     setNodes((prevNodes) => {
       const previousNodes = new Map(prevNodes.map((node) => [node.id, node]));
@@ -179,12 +204,13 @@ export default function Knowledge() {
           y: center + radius * Math.sin(angle),
         };
         const existing = previousNodes.get(objective.id);
+        const savedPosition = savedLayoutRef.current[objective.id];
         const isActive = objective.id === selectedId;
         const color = statusColor(objective.status);
 
         return {
           id: objective.id,
-          position: existing ? existing.position : fallbackPosition,
+          position: existing?.position ?? savedPosition ?? fallbackPosition,
           data: {
             label: objective.text,
             status: objective.status,
@@ -219,6 +245,10 @@ export default function Knowledge() {
     }));
 
     setEdges(updatedEdges);
+    if (isInitial) {
+      setHasUnsavedLayout(false);
+      layoutInitialisedRef.current = true;
+    }
   }, [objectivesInView, relationshipsInView, selectedId]);
 
   const selectedObjective = selectedId ? nodeMap.get(selectedId) ?? null : null;
@@ -233,18 +263,34 @@ export default function Knowledge() {
 
     return related
       .map((relationship) => {
-        const targetId = relationship.fromId === selectedObjective.id ? relationship.toId : relationship.fromId;
-        const target = snapshot.objectives.find((objective) => objective.id === targetId);
-        if (!target) return null;
+        const isOutgoing = relationship.fromId === selectedObjective.id;
+        const otherId = isOutgoing ? relationship.toId : relationship.fromId;
+        const other = snapshot.objectives.find((objective) => objective.id === otherId);
+        if (!other) return null;
         return {
           id: relationship.id,
+          fromId: relationship.fromId,
+          toId: relationship.toId,
           type: relationship.type,
           rationale: relationship.rationale,
-          target,
+          other,
+          direction: isOutgoing ? 'outgoing' : 'incoming',
         } satisfies PopoverRelation;
       })
       .filter((value): value is PopoverRelation => Boolean(value));
   }, [selectedObjective, snapshot]);
+
+  const openEditRelationship = useCallback((relation: PopoverRelation) => {
+    setConnectionForm({
+      mode: 'edit',
+      relationshipId: relation.id,
+      sourceId: relation.fromId,
+      targetId: relation.toId,
+      type: (relation.type as RelationshipType) ?? 'RELATES_TO',
+      rationale: relation.rationale ?? '',
+    });
+    setConnectionError(null);
+  }, []);
 
   const onNodeClick = useCallback((_: unknown, node: FlowNode) => {
     setSelectedId(node.id);
@@ -257,8 +303,58 @@ export default function Knowledge() {
   }, []);
 
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
+    const positionChanged = changes.some((change) => change.type === 'position');
+    if (positionChanged) {
+      setHasUnsavedLayout(true);
+    }
     setNodes((prev) => applyNodeChanges(changes, prev));
   }, []);
+
+  const handleSaveLayout = useCallback(() => {
+    const layout = Object.fromEntries(nodes.map((node) => [node.id, node.position]));
+    try {
+      localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layout));
+      savedLayoutRef.current = layout;
+      setHasUnsavedLayout(false);
+    } catch (err) {
+      console.error('Failed to save layout', err);
+      setConnectionError('Unable to save layout locally.');
+    }
+  }, [nodes]);
+
+  const handleDeleteObjective = useCallback(async () => {
+    if (!selectedObjective) return;
+
+    const id = selectedObjective.id;
+    try {
+      setConnectionError(null);
+      const response = await fetch(`http://localhost:3001/api/objectives/${id}`, {
+        method: 'DELETE',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || `HTTP ${response.status}`);
+      }
+
+      const layoutCopy = { ...savedLayoutRef.current };
+      if (layoutCopy[id]) {
+        delete layoutCopy[id];
+        savedLayoutRef.current = layoutCopy;
+        try {
+          localStorage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(layoutCopy));
+        } catch (err) {
+          console.warn('Failed to update saved layout after deletion', err);
+        }
+      }
+
+      await refreshSnapshot();
+      setSelectedId(null);
+    } catch (err) {
+      console.error('Delete objective error', err);
+      setConnectionError(err instanceof Error ? err.message : 'Failed to delete objective');
+    }
+  }, [selectedObjective, refreshSnapshot]);
 
   const handleConnect = useCallback((connection: Connection) => {
     if (!connection.source || !connection.target) return;
@@ -267,6 +363,7 @@ export default function Knowledge() {
       return;
     }
     setConnectionForm({
+      mode: 'create',
       sourceId: connection.source,
       targetId: connection.target,
       type: 'RELATES_TO',
@@ -281,28 +378,55 @@ export default function Knowledge() {
     setConnectionError(null);
 
     try {
-      const response = await fetch('http://localhost:3001/api/objectives/relationships', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fromId: connectionForm.sourceId,
-          toId: connectionForm.targetId,
-          type: connectionForm.type,
-          rationale: connectionForm.rationale.trim() || null,
-        }),
-      });
+      if (connectionForm.mode === 'create') {
+        const response = await fetch('http://localhost:3001/api/objectives/relationships', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fromId: connectionForm.sourceId,
+            toId: connectionForm.targetId,
+            type: connectionForm.type,
+            rationale: connectionForm.rationale.trim() || null,
+          }),
+        });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.error || `HTTP ${response.status}`);
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || `HTTP ${response.status}`);
+        }
+
+        await refreshSnapshot();
+        setConnectionForm(null);
+        setSelectedId(connectionForm.sourceId);
+      } else {
+        if (!connectionForm.relationshipId) {
+          throw new Error('Relationship id missing');
+        }
+
+        const response = await fetch(
+          `http://localhost:3001/api/objectives/relationships/${connectionForm.relationshipId}`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              type: connectionForm.type,
+              rationale: connectionForm.rationale.trim() || null,
+              toId: connectionForm.targetId,
+            }),
+          },
+        );
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.error || `HTTP ${response.status}`);
+        }
+
+        await refreshSnapshot();
+        setConnectionForm(null);
       }
-
-      await refreshSnapshot();
-      setConnectionForm(null);
-      setSelectedId(connectionForm.sourceId);
     } catch (err) {
       console.error('Connection save error', err);
-      setConnectionError(err instanceof Error ? err.message : 'Failed to create relationship');
+      setConnectionError(err instanceof Error ? err.message : 'Failed to save relationship');
     } finally {
       setConnectionSaving(false);
     }
@@ -391,29 +515,43 @@ export default function Knowledge() {
                   {popoverRelations.map((relation) => (
                     <li key={relation.id}>
                       <strong>{relation.type.replace('_', ' ')}</strong>
-                      <p>{relation.target.text}</p>
+                      <p>{relation.other.text}</p>
+                      <small>{relation.direction === 'outgoing' ? 'From this objective' : 'To this objective'}</small>
                       {relation.rationale && <small>{relation.rationale}</small>}
-                      <button
-                        type="button"
-                        className="explore__relation-remove"
-                        onClick={() => handleRelationDelete(relation.id)}
-                      >
-                        Remove link
-                      </button>
+                      <div className="explore__relation-buttons">
+                        <button
+                          type="button"
+                          className="explore__relation-edit"
+                          onClick={() => openEditRelationship(relation)}
+                        >
+                          Edit link
+                        </button>
+                        <button
+                          type="button"
+                          className="explore__relation-remove"
+                          onClick={() => handleRelationDelete(relation.id)}
+                        >
+                          Remove link
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>
               )}
             </div>
+
+            <button type="button" className="explore__delete-button" onClick={handleDeleteObjective}>
+              Delete objective
+            </button>
           </div>
         )}
 
         {connectionForm && (
           <div className="explore__builder" role="dialog" aria-live="polite">
-            <h4>Create relationship</h4>
+            <h4>{connectionForm.mode === 'edit' ? 'Update relationship' : 'Create relationship'}</h4>
             <p>
-              Establish a connection from{' '}
-              <strong>{nodeMap.get(connectionForm.sourceId)?.text ?? connectionForm.sourceId}</strong> to{' '}
+              Connect{' '}
+              <strong>{nodeMap.get(connectionForm.sourceId)?.text ?? connectionForm.sourceId}</strong> with{' '}
               <strong>{nodeMap.get(connectionForm.targetId)?.text ?? connectionForm.targetId}</strong>.
             </p>
             <label htmlFor="connection-type">Relationship type</label>
@@ -448,7 +586,13 @@ export default function Knowledge() {
 
             <div className="explore__builder-actions">
               <button type="button" onClick={handleConnectionSave} disabled={connectionSaving}>
-                {connectionSaving ? 'Linking…' : 'Create link'}
+                {connectionSaving
+                  ? connectionForm.mode === 'edit'
+                    ? 'Updating…'
+                    : 'Linking…'
+                  : connectionForm.mode === 'edit'
+                  ? 'Update link'
+                  : 'Create link'}
               </button>
               <button type="button" className="tickets__secondary" onClick={handleConnectionCancel}>
                 Cancel
@@ -460,6 +604,24 @@ export default function Knowledge() {
         {connectionError && !connectionForm && (
           <div className="explore__builder-error explore__builder-error--toast" role="alert">
             {connectionError}
+          </div>
+        )}
+
+        {nodes.length > 0 && (
+          <div className="explore__toolbar">
+            <button
+              type="button"
+              className={
+                hasUnsavedLayout
+                  ? 'explore__save-button explore__save-button--active'
+                  : 'explore__save-button explore__save-button--disabled'
+              }
+              onClick={handleSaveLayout}
+              disabled={!hasUnsavedLayout}
+              aria-label="Save layout"
+            >
+              <SaveIcon fontSize="small" />
+            </button>
           </div>
         )}
       </div>

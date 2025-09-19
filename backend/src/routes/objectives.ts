@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   createKnowledgeGraphEntry,
   createObjectiveRelationshipRecord,
+  deleteObjectiveById,
   deleteObjectiveRelationshipRecord,
   getKnowledgeGraphSnapshot,
   getObjectivesByIds,
@@ -325,6 +326,30 @@ objectivesRouter.delete('/relationships/:id', async (req: Request, res: Response
     console.error('Error deleting relationship:', error);
     return res.status(500).json({
       error: 'Failed to delete relationship',
+      message: error instanceof Error ? error.message : 'Unknown error',
+    });
+  }
+});
+
+// DELETE /api/objectives/:id
+objectivesRouter.delete('/:id', async (req: Request, res: Response) => {
+  const objectiveId = req.params.id;
+
+  if (!objectiveId) {
+    return res.status(400).json({ error: 'Objective id is required' });
+  }
+
+  try {
+    await deleteObjectiveById(objectiveId);
+    return res.json({ id: objectiveId });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      return res.status(404).json({ error: 'Objective not found' });
+    }
+
+    console.error('Error deleting objective:', error);
+    return res.status(500).json({
+      error: 'Failed to delete objective',
       message: error instanceof Error ? error.message : 'Unknown error',
     });
   }
